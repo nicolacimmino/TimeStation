@@ -36,7 +36,21 @@
 //  Globals.
 //
 
+#define TMMODULE_RX_BUF_SIZE 32
+#define TMMODULE_TX_BUF_SIZE 32
+
 SoftwareSerial tmSerial(PIN_TIMEMODULE_RX, PIN_TIMEMODULE_TX);
+char tmModuleRXBuffer[TMMODULE_RX_BUF_SIZE];
+char tmModuleTxBuffer[TMMODULE_RX_BUF_SIZE];
+
+//
+/////////////////////////////////////////////////////////////////////////////////////////////
+
+/////////////////////////////////////////////////////////////////////////////////////////////
+// Terminal.
+
+#define TERMINAL_BAUDRATE 9600
+#define TERMINAL_KEY_ESC 0x1B
 
 //
 /////////////////////////////////////////////////////////////////////////////////////////////
@@ -47,29 +61,28 @@ SoftwareSerial tmSerial(PIN_TIMEMODULE_RX, PIN_TIMEMODULE_TX);
 void setup()
 {
   tmSerial.begin(9600);
-  Serial.begin(9600);
+  Serial.begin(TERMINAL_BAUDRATE);
 }
 
 //
 /////////////////////////////////////////////////////////////////////////////////////////////
 
-void sendTMModuleCommand(const char *text, char *outputBuffer = NULL, uint8_t outputBufferSize = 0)
+/////////////////////////////////////////////////////////////////////////////////////////////
+// Send a command to the time module and optionally collect the response.
+
+void speakToTmModule(const char *command, char *outputBuffer = NULL, uint8_t outputBufferSize = 0)
 {
-  uint8_t outputIx = 0;
+  // We need to speak really slowly. It seems the time moudule is bit-banging the serial reading
+  // and had no buffer at all. It works great when typing from keyboard but not programmatically.
+  do
+  {
+    tmSerial.print(*command ? *command : '\r');
+    delay(50);
+  } while (*command++ != 0);
+
+  // All responses are in the format "label: xxxxx\n", where xxxx is the part we want.
+
   bool suppressResponse = true;
-  
-  if (outputBuffer != NULL)
-  {
-    memset(outputBuffer, 0, outputBufferSize);
-  }
-
-  while (*text != 0)
-  {
-    tmSerial.print((char)*text);
-    delay(100);
-    text++;
-  }
-
   while (tmSerial.available())
   {
     char c = tmSerial.read();
@@ -82,8 +95,7 @@ void sendTMModuleCommand(const char *text, char *outputBuffer = NULL, uint8_t ou
         continue;
       }
 
-      outputBuffer[outputIx] = c;
-      outputIx++;
+      *outputBuffer++ = c;
     }
 
     if (c == ' ')
@@ -93,34 +105,40 @@ void sendTMModuleCommand(const char *text, char *outputBuffer = NULL, uint8_t ou
   }
 }
 
-void setProtocol()
+void sendTmModuleCommand(const char *command)
 {
-#define BUF_SIZE 128
-  char responseBuffer[BUF_SIZE];
+  memset(tmModuleRXBuffer, 0, TMMODULE_RX_BUF_SIZE);
 
-  sendTMModuleCommand("\r=\r");
-  sendTMModuleCommand("p4\r", responseBuffer, BUF_SIZE);
-  Serial.println(responseBuffer);
-  sendTMModuleCommand("z1\r", responseBuffer, BUF_SIZE);
-  Serial.println(responseBuffer);
-  sendTMModuleCommand("t\r", responseBuffer, BUF_SIZE);
-  Serial.println(responseBuffer);
-  sendTMModuleCommand("d\r", responseBuffer, BUF_SIZE);
-  Serial.println(responseBuffer);
-  sendTMModuleCommand("x\r");
+  speakToTmModule("=");
+  speakToTmModule(command, tmModuleRXBuffer, TMMODULE_RX_BUF_SIZE);
+  speakToTmModule("x");
 }
 
+//
 /////////////////////////////////////////////////////////////////////////////////////////////
-// Main loop.
 
-void loop()
+void setProtocol(uint8_t protocol)
 {
-  setProtocol();
+  sprintf(tmModuleTxBuffer, "p%i", protocol);
+  sendTmModuleCommand(tmModuleTxBuffer);
+  Serial.println(tmModuleRXBuffer);
 
+  sendTmModuleCommand("z");
+  Serial.println(tmModuleRXBuffer);
+}
+
+void enterDirectMode()
+{
   while (true)
   {
     while (Serial.available())
     {
+      if (Serial.peek() == TERMINAL_KEY_ESC)
+      {
+        Serial.read();
+        return;
+      }
+
       tmSerial.write(Serial.read());
     }
 
@@ -128,6 +146,19 @@ void loop()
     {
       Serial.write(tmSerial.read());
     }
+  }
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////
+// Main loop.
+
+void loop()
+{
+  // setProtocol(3);
+  if (Serial.peek() == TERMINAL_KEY_ESC)
+  {
+    Serial.read();
+    enterDirectMode();
   }
 }
 
