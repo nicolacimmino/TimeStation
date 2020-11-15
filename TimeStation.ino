@@ -44,8 +44,6 @@ SoftwareSerial tmSerial(PIN_TIMEMODULE_RX, PIN_TIMEMODULE_TX);
 /////////////////////////////////////////////////////////////////////////////////////////////
 // Setup.
 
-
-
 void setup()
 {
   tmSerial.begin(9600);
@@ -55,22 +53,61 @@ void setup()
 //
 /////////////////////////////////////////////////////////////////////////////////////////////
 
-void printSlowly(const char *text)
+void sendTMModuleCommand(const char *text, char *outputBuffer = NULL, uint8_t outputBufferSize = 0)
 {
+  uint8_t outputIx = 0;
+  bool suppressResponse = true;
+  
+  if (outputBuffer != NULL)
+  {
+    memset(outputBuffer, 0, outputBufferSize);
+  }
+
   while (*text != 0)
   {
     tmSerial.print((char)*text);
     delay(100);
     text++;
   }
-}
-void setProtocol()
-{
-  printSlowly("\r=\rp4\rx\r\0");
+
   while (tmSerial.available())
   {
-    (tmSerial.read());
+    char c = tmSerial.read();
+
+    if (outputBuffer != NULL && !suppressResponse)
+    {
+      if (c == '\r')
+      {
+        suppressResponse = true;
+        continue;
+      }
+
+      outputBuffer[outputIx] = c;
+      outputIx++;
+    }
+
+    if (c == ' ')
+    {
+      suppressResponse = false;
+    }
   }
+}
+
+void setProtocol()
+{
+#define BUF_SIZE 128
+  char responseBuffer[BUF_SIZE];
+
+  sendTMModuleCommand("\r=\r");
+  sendTMModuleCommand("p4\r", responseBuffer, BUF_SIZE);
+  Serial.println(responseBuffer);
+  sendTMModuleCommand("z1\r", responseBuffer, BUF_SIZE);
+  Serial.println(responseBuffer);
+  sendTMModuleCommand("t\r", responseBuffer, BUF_SIZE);
+  Serial.println(responseBuffer);
+  sendTMModuleCommand("d\r", responseBuffer, BUF_SIZE);
+  Serial.println(responseBuffer);
+  sendTMModuleCommand("x\r");
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////
