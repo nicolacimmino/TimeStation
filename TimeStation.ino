@@ -21,6 +21,7 @@
 #include <EEPROM.h>
 #include <Arduino.h>
 #include <SoftwareSerial.h>
+#include "src/NRF24L01RadioDriver.h"
 
 /////////////////////////////////////////////////////////////////////////////////////////////
 //  Hardware.
@@ -28,6 +29,7 @@
 
 #define PIN_TIMEMODULE_RX 2
 #define PIN_TIMEMODULE_TX 3
+#define RADIO_HW_VERSION 2
 
 //
 /////////////////////////////////////////////////////////////////////////////////////////////
@@ -42,15 +44,19 @@
 SoftwareSerial tmSerial(PIN_TIMEMODULE_RX, PIN_TIMEMODULE_TX);
 char tmModuleRXBuffer[TMMODULE_RX_BUF_SIZE];
 char tmModuleTxBuffer[TMMODULE_RX_BUF_SIZE];
+NRF24L01RadioDriver *radio;
 
 //
 /////////////////////////////////////////////////////////////////////////////////////////////
 
 /////////////////////////////////////////////////////////////////////////////////////////////
-// Terminal.
+// Terminal/Radio Control.
 
 #define TERMINAL_BAUDRATE 9600
 #define TERMINAL_KEY_ESC 0x1B
+
+#define RTX_EXTENDED_PREAMBLE 643234
+#define RADIO_CHANNEL 85
 
 //
 /////////////////////////////////////////////////////////////////////////////////////////////
@@ -62,6 +68,12 @@ void setup()
 {
   tmSerial.begin(9600);
   Serial.begin(TERMINAL_BAUDRATE);
+
+  radio = new NRF24L01RadioDriver(RADIO_HW_VERSION);
+  radio->setRXExtendedPreamble(RTX_EXTENDED_PREAMBLE);
+  radio->setTXExtendedPreamble(RTX_EXTENDED_PREAMBLE);
+  radio->setTXPower(3);
+  radio->setRFChannel(RADIO_CHANNEL);
 }
 
 //
@@ -73,7 +85,7 @@ void setup()
 void speakToTmModule(const char *command, char *outputBuffer = NULL, uint8_t outputBufferSize = 0)
 {
   // We need to speak really slowly. It seems the time moudule is bit-banging the serial reading
-  // and had no buffer at all. It works great when typing from keyboard but not programmatically.
+  // and has no buffer at all. It works great when typing from keyboard but not programmatically.
   do
   {
     tmSerial.print(*command ? *command : '\r');
@@ -117,35 +129,44 @@ void sendTmModuleCommand(const char *command)
 //
 /////////////////////////////////////////////////////////////////////////////////////////////
 
-void setProtocol(uint8_t protocol)
-{
-  sprintf(tmModuleTxBuffer, "p%i", protocol);
-  sendTmModuleCommand(tmModuleTxBuffer);
-  Serial.println(tmModuleRXBuffer);
+/////////////////////////////////////////////////////////////////////////////////////////////
+// Serve the serial inteface.
+// All traffic is marshalled between the serial interface and the time module serial.
+//
 
-  sendTmModuleCommand("z");
-  Serial.println(tmModuleRXBuffer);
+void serveSerialInterface()
+{
+  while (Serial.available())
+  {
+    tmSerial.write(Serial.read());
+  }
+
+  while (tmSerial.available())
+  {
+    Serial.write(tmSerial.read());
+  }
 }
 
-void enterDirectMode()
+//
+/////////////////////////////////////////////////////////////////////////////////////////////
+
+/////////////////////////////////////////////////////////////////////////////////////////////
+// Serve radio interface.
+// Commands sent on the radio interface are passed directly to the time module and the
+//  response is sent back.
+//
+
+void serveRadioInterface()
 {
-  while (true)
+  char buffer[64];
+  uint8_t dataBufferSize = 64;
+
+  memset(buffer, 0, dataBufferSize);
+
+  if (radio->receive(buffer, &dataBufferSize, 500))
   {
-    while (Serial.available())
-    {
-      if (Serial.peek() == TERMINAL_KEY_ESC)
-      {
-        Serial.read();
-        return;
-      }
-
-      tmSerial.write(Serial.read());
-    }
-
-    while (tmSerial.available())
-    {
-      Serial.write(tmSerial.read());
-    }
+    sendTmModuleCommand(buffer);
+    radio->send(tmModuleRXBuffer, strlen(tmModuleRXBuffer));
   }
 }
 
@@ -154,11 +175,8 @@ void enterDirectMode()
 
 void loop()
 {
-  // setProtocol(3);
-  if (Serial.available() && Serial.read() == TERMINAL_KEY_ESC)
-  {
-    enterDirectMode();
-  }
+  serveSerialInterface();
+  serveRadioInterface();
 }
 
 //
