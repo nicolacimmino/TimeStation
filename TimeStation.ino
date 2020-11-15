@@ -155,9 +155,8 @@ void enterDirectMode()
 void loop()
 {
   // setProtocol(3);
-  if (Serial.peek() == TERMINAL_KEY_ESC)
+  if (Serial.available() && Serial.read() == TERMINAL_KEY_ESC)
   {
-    Serial.read();
     enterDirectMode();
   }
 }
