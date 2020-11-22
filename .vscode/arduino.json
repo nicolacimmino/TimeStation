@@ -1,5 +1,5 @@
 {
-    "port": "COM22",
+    "port": "COM6",
     "board": "arduino:avr:nano",
     "configuration": "cpu=atmega328old",
     "sketch": "TimeStation.ino"

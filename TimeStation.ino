@@ -1,5 +1,5 @@
 /////////////////////////////////////////////////////////////////////////////////////////////
-//  Time Station.
+//  Portable Time Station.
 //  Copyright (C) 2020 Nicola Cimmino
 //
 //    This program is free software: you can redistribute it and/or modify
@@ -30,6 +30,7 @@
 #define PIN_TIMEMODULE_RX 2
 #define PIN_TIMEMODULE_TX 3
 #define RADIO_HW_VERSION 2
+#define PIN_YELLOW_LED 6
 
 //
 /////////////////////////////////////////////////////////////////////////////////////////////
@@ -56,25 +57,8 @@ NRF24L01RadioDriver *radio;
 #define TERMINAL_KEY_ESC 0x1B
 
 #define RTX_EXTENDED_PREAMBLE 643234
-#define RADIO_CHANNEL 85
-
-//
-/////////////////////////////////////////////////////////////////////////////////////////////
-
-/////////////////////////////////////////////////////////////////////////////////////////////
-// Setup.
-
-void setup()
-{
-  tmSerial.begin(9600);
-  Serial.begin(TERMINAL_BAUDRATE);
-
-  radio = new NRF24L01RadioDriver(RADIO_HW_VERSION);
-  radio->setRXExtendedPreamble(RTX_EXTENDED_PREAMBLE);
-  radio->setTXExtendedPreamble(RTX_EXTENDED_PREAMBLE);
-  radio->setTXPower(3);
-  radio->setRFChannel(RADIO_CHANNEL);
-}
+#define CONTROL_RADIO_CHANNEL 85
+#define TIME_BROADCAST_RADIO_CHANNEL 32
 
 //
 /////////////////////////////////////////////////////////////////////////////////////////////
@@ -163,12 +147,86 @@ void serveRadioInterface()
 
   memset(buffer, 0, dataBufferSize);
 
+  radio->setRFChannel(CONTROL_RADIO_CHANNEL);
   if (radio->receive(buffer, &dataBufferSize, 500))
   {
     sendTmModuleCommand(buffer);
     radio->send(tmModuleRXBuffer, strlen(tmModuleRXBuffer));
   }
 }
+
+//
+/////////////////////////////////////////////////////////////////////////////////////////////
+
+/////////////////////////////////////////////////////////////////////////////////////////////
+// Attempt to get a time signal from a BTS24 station and set the internal RTC.
+// This call bloks until a valid time signal is received.
+//
+
+void syncWithTimeSignal()
+{
+  char buffer[32];
+  uint8_t dataLen = 32;
+
+  radio->setRFChannel(TIME_BROADCAST_RADIO_CHANNEL);
+
+  while (true)
+  {
+    digitalWrite(PIN_YELLOW_LED, (millis() % 2000) < 1000);
+
+    if (radio->receive(buffer, &dataLen, 1000))
+    {
+      uint8_t dateParts[6];
+
+      char *token = strtok(buffer, ",");
+      if (strcmp(*token, "^T"))
+      {
+        for (uint8_t ix = 0; ix < 6; ix++)
+        {
+          token = strtok(NULL, ",");
+          dateParts[ix] = atoi(token);
+        }
+
+        sprintf(buffer, "T%02d%02d%02d", dateParts[0], dateParts[1], dateParts[2]);
+        sendTmModuleCommand(buffer);
+
+        sprintf(buffer, "D%02d%02d%02d", dateParts[5], dateParts[4], dateParts[3]);
+        sendTmModuleCommand(buffer);
+
+        digitalWrite(PIN_YELLOW_LED, HIGH);
+
+        return;
+      }
+    }
+  }
+}
+
+//
+/////////////////////////////////////////////////////////////////////////////////////////////
+
+/////////////////////////////////////////////////////////////////////////////////////////////
+// Setup.
+
+void setup()
+{
+  pinMode(PIN_YELLOW_LED, OUTPUT);
+  digitalWrite(PIN_YELLOW_LED, LOW);
+
+  tmSerial.begin(9600);
+  Serial.begin(TERMINAL_BAUDRATE);
+
+  radio = new NRF24L01RadioDriver(RADIO_HW_VERSION);
+  radio->setRXExtendedPreamble(RTX_EXTENDED_PREAMBLE);
+  radio->setTXExtendedPreamble(RTX_EXTENDED_PREAMBLE);
+  radio->setTXPower(3);
+
+  sendTmModuleCommand("coff");
+  syncWithTimeSignal();
+  sendTmModuleCommand("con");
+}
+
+//
+/////////////////////////////////////////////////////////////////////////////////////////////
 
 /////////////////////////////////////////////////////////////////////////////////////////////
 // Main loop.
