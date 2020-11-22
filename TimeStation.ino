@@ -31,6 +31,17 @@
 #define PIN_TIMEMODULE_TX 3
 #define RADIO_HW_VERSION 2
 #define PIN_YELLOW_LED 6
+#define PIN_FIRST_RED_LED A0
+
+//
+/////////////////////////////////////////////////////////////////////////////////////////////
+
+/////////////////////////////////////////////////////////////////////////////////////////////
+//  EEPROM.
+//
+
+#define EEPROM_BOOT_FLAG 0
+#define EEPROM_TIME_PROTOCOL 1
 
 //
 /////////////////////////////////////////////////////////////////////////////////////////////
@@ -46,6 +57,7 @@ SoftwareSerial tmSerial(PIN_TIMEMODULE_RX, PIN_TIMEMODULE_TX);
 char tmModuleRXBuffer[TMMODULE_RX_BUF_SIZE];
 char tmModuleTxBuffer[TMMODULE_RX_BUF_SIZE];
 NRF24L01RadioDriver *radio;
+unsigned long setupStartTime = 0;
 
 //
 /////////////////////////////////////////////////////////////////////////////////////////////
@@ -115,7 +127,8 @@ void sendTmModuleCommand(const char *command)
 
 /////////////////////////////////////////////////////////////////////////////////////////////
 // Serve the serial inteface.
-// All traffic is marshalled between the serial interface and the time module serial.
+// All traffic is marshalled in both direction between the serial interface and
+//  the time module serial.
 //
 
 void serveSerialInterface()
@@ -142,8 +155,8 @@ void serveSerialInterface()
 
 void serveRadioInterface()
 {
-  char buffer[64];
-  uint8_t dataBufferSize = 64;
+  char buffer[32];
+  uint8_t dataBufferSize = 32;
 
   memset(buffer, 0, dataBufferSize);
 
@@ -160,7 +173,7 @@ void serveRadioInterface()
 
 /////////////////////////////////////////////////////////////////////////////////////////////
 // Attempt to get a time signal from a BTS24 station and set the internal RTC.
-// This call bloks until a valid time signal is received.
+// This call blocks until a valid time signal is received.
 //
 
 void syncWithTimeSignal()
@@ -172,7 +185,7 @@ void syncWithTimeSignal()
 
   while (true)
   {
-    digitalWrite(PIN_YELLOW_LED, (millis() % 2000) < 1000);
+    analogWrite(PIN_YELLOW_LED, ((millis() % 2000) < 1000) ? 20 : 0);
 
     if (radio->receive(buffer, &dataLen, 1000))
     {
@@ -193,7 +206,7 @@ void syncWithTimeSignal()
         sprintf(buffer, "D%02d%02d%02d", dateParts[5], dateParts[4], dateParts[3]);
         sendTmModuleCommand(buffer);
 
-        digitalWrite(PIN_YELLOW_LED, HIGH);
+        analogWrite(PIN_YELLOW_LED, 20);
 
         return;
       }
@@ -205,24 +218,95 @@ void syncWithTimeSignal()
 /////////////////////////////////////////////////////////////////////////////////////////////
 
 /////////////////////////////////////////////////////////////////////////////////////////////
-// Setup.
+// Show the currently selected time protocol on the LED map.
+//
 
-void setup()
+void showTimeProtocol()
 {
-  pinMode(PIN_YELLOW_LED, OUTPUT);
-  digitalWrite(PIN_YELLOW_LED, LOW);
+  for (uint8_t ix = 0; ix < 4; ix++)
+  {
+    digitalWrite(PIN_FIRST_RED_LED + ix, ix == (EEPROM.read(EEPROM_TIME_PROTOCOL) - 1));
+  }
+}
 
-  tmSerial.begin(9600);
-  Serial.begin(TERMINAL_BAUDRATE);
+//
+/////////////////////////////////////////////////////////////////////////////////////////////
 
+/////////////////////////////////////////////////////////////////////////////////////////////
+// Initialize the time module for the current selected protocol.
+// We always set the flags to TZ 0 and no DTS Region because we always carry current local
+// time in the RTC.
+//
+
+void initTimeModule()
+{
+  char buf[8];
+  sprintf(buf, "P%d", EEPROM.read(EEPROM_TIME_PROTOCOL));
+  sendTmModuleCommand(buf);
+  sendTmModuleCommand("Z0");
+  sendTmModuleCommand("ROFF");
+}
+
+//
+/////////////////////////////////////////////////////////////////////////////////////////////
+
+void processBootFlag()
+{
+  if (setupStartTime == 0)
+  {
+    // If the boot flag is set we rebooted less than 10s after the last boot,
+    // switch to the next time protocol.
+    if (EEPROM.read(EEPROM_BOOT_FLAG) == 1)
+    {
+      EEPROM.write(EEPROM_TIME_PROTOCOL, 1 + (EEPROM.read(EEPROM_TIME_PROTOCOL) % 4));
+    }
+
+    // Write the boot flag, this will be cleared after 10s of activity.
+    EEPROM.write(EEPROM_BOOT_FLAG, 1);
+
+    setupStartTime = millis();
+
+    return;
+  }
+
+  if (millis() - setupStartTime > 10000 && EEPROM.read(EEPROM_BOOT_FLAG) != 0)
+  {
+    EEPROM.write(EEPROM_BOOT_FLAG, 0);
+  }
+}
+
+void initRadio()
+{
   radio = new NRF24L01RadioDriver(RADIO_HW_VERSION);
   radio->setRXExtendedPreamble(RTX_EXTENDED_PREAMBLE);
   radio->setTXExtendedPreamble(RTX_EXTENDED_PREAMBLE);
   radio->setTXPower(3);
+}
 
-  sendTmModuleCommand("coff");
+/////////////////////////////////////////////////////////////////////////////////////////////
+// Setup.
+
+void setup()
+{
+  Serial.begin(TERMINAL_BAUDRATE);
+  tmSerial.begin(9600);
+
+  for (uint8_t ix = 0; ix < 4; ix++)
+  {
+    pinMode(PIN_FIRST_RED_LED + ix, OUTPUT);
+    digitalWrite(PIN_FIRST_RED_LED + ix, LOW);
+  }
+
+  pinMode(PIN_YELLOW_LED, OUTPUT);
+  digitalWrite(PIN_YELLOW_LED, LOW);
+
+  processBootFlag();
+  showTimeProtocol();
+  initRadio();
+  initTimeModule();
+  sendTmModuleCommand("COFF");
   syncWithTimeSignal();
-  sendTmModuleCommand("con");
+  sendTmModuleCommand("CON");
 }
 
 //
@@ -233,6 +317,7 @@ void setup()
 
 void loop()
 {
+  processBootFlag();
   serveSerialInterface();
   serveRadioInterface();
 }
