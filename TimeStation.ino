@@ -21,7 +21,7 @@
 #include <EEPROM.h>
 #include <Arduino.h>
 #include <SoftwareSerial.h>
-#include "src/NRF24L01RadioDriver.h"
+#include <DCServices.h>
 
 /////////////////////////////////////////////////////////////////////////////////////////////
 //  Hardware.
@@ -29,7 +29,6 @@
 
 #define PIN_TIMEMODULE_RX 2
 #define PIN_TIMEMODULE_TX 3
-#define RADIO_HW_VERSION 2
 #define PIN_YELLOW_LED 6
 #define PIN_FIRST_RED_LED A0
 
@@ -56,21 +55,9 @@
 SoftwareSerial tmSerial(PIN_TIMEMODULE_RX, PIN_TIMEMODULE_TX);
 char tmModuleRXBuffer[TMMODULE_RX_BUF_SIZE];
 char tmModuleTxBuffer[TMMODULE_RX_BUF_SIZE];
-NRF24L01RadioDriver *radio;
 unsigned long setupStartTime = 0;
 
-//
-/////////////////////////////////////////////////////////////////////////////////////////////
-
-/////////////////////////////////////////////////////////////////////////////////////////////
-// Terminal/Radio Control.
-
-#define TERMINAL_BAUDRATE 9600
-#define TERMINAL_KEY_ESC 0x1B
-
-#define RTX_EXTENDED_PREAMBLE 643234
-#define CONTROL_RADIO_CHANNEL 85
-#define TIME_BROADCAST_RADIO_CHANNEL 32
+DCServices *dcServices;
 
 //
 /////////////////////////////////////////////////////////////////////////////////////////////
@@ -126,92 +113,29 @@ void sendTmModuleCommand(const char *command)
 /////////////////////////////////////////////////////////////////////////////////////////////
 
 /////////////////////////////////////////////////////////////////////////////////////////////
-// Serve the serial inteface.
-// All traffic is marshalled in both direction between the serial interface and
-//  the time module serial.
-//
-
-void serveSerialInterface()
-{
-  while (Serial.available())
-  {
-    tmSerial.write(Serial.read());
-  }
-
-  while (tmSerial.available())
-  {
-    Serial.write(tmSerial.read());
-  }
-}
-
-//
-/////////////////////////////////////////////////////////////////////////////////////////////
-
-/////////////////////////////////////////////////////////////////////////////////////////////
-// Serve radio interface.
-// Commands sent on the radio interface are passed directly to the time module and the
-//  response is sent back.
-//
-
-void serveRadioInterface()
-{
-  char buffer[32];
-  uint8_t dataBufferSize = 32;
-
-  memset(buffer, 0, dataBufferSize);
-
-  radio->setRFChannel(CONTROL_RADIO_CHANNEL);
-  if (radio->receive(buffer, &dataBufferSize, 500))
-  {
-    sendTmModuleCommand(buffer);
-    radio->send(tmModuleRXBuffer, strlen(tmModuleRXBuffer));
-  }
-}
-
-//
-/////////////////////////////////////////////////////////////////////////////////////////////
-
-/////////////////////////////////////////////////////////////////////////////////////////////
-// Attempt to get a time signal from a BTS24 station and set the internal RTC.
-// This call blocks until a valid time signal is received.
-//
+// Attempt to get a time signal from from the DataCloud set the internal RTC.
+// If the sync is successfull the yellow LED will be lit.
 
 void syncWithTimeSignal()
 {
-  char buffer[32];
-  uint8_t dataLen = 32;
+  DateTime *dateTime = new DateTime();
 
-  radio->setRFChannel(TIME_BROADCAST_RADIO_CHANNEL);
+  analogWrite(PIN_YELLOW_LED, 0);
 
-  while (true)
+  if (dcServices->receiveTimeBroadcast(dateTime))
   {
-    analogWrite(PIN_YELLOW_LED, ((millis() % 2000) < 1000) ? 20 : 0);
+    char buffer[16];
 
-    if (radio->receive(buffer, &dataLen, 1000))
-    {
-      uint8_t dateParts[6];
+    sprintf(buffer, "T%02d%02d%02d", dateTime->hour, dateTime->minute, dateTime->second);
+    sendTmModuleCommand(buffer);
 
-      char *token = strtok(buffer, ",");
-      if (strcmp(*token, "^T"))
-      {
-        for (uint8_t ix = 0; ix < 6; ix++)
-        {
-          token = strtok(NULL, ",");
-          dateParts[ix] = atoi(token);
-        }
+    sprintf(buffer, "D%02d%02d%02d", dateTime->day, dateTime->month, dateTime->year);
+    sendTmModuleCommand(buffer);
 
-        sprintf(buffer, "T%02d%02d%02d", dateParts[0], dateParts[1], dateParts[2]);
-        sendTmModuleCommand(buffer);
-
-        sprintf(buffer, "D%02d%02d%02d", dateParts[5], dateParts[4], dateParts[3]);
-        sendTmModuleCommand(buffer);
-
-        analogWrite(PIN_YELLOW_LED, 20);
-
-        return;
-      }
-    }
+    analogWrite(PIN_YELLOW_LED, 10);
   }
+
+  delete dateTime;
 }
 
 //
@@ -245,6 +169,7 @@ void initTimeModule()
   sendTmModuleCommand(buf);
   sendTmModuleCommand("Z0");
   sendTmModuleCommand("ROFF");
+  sendTmModuleCommand("CON");
 }
 
 //
@@ -275,20 +200,11 @@ void processBootFlag()
   }
 }
 
-void initRadio()
-{
-  radio = new NRF24L01RadioDriver(RADIO_HW_VERSION);
-  radio->setRXExtendedPreamble(RTX_EXTENDED_PREAMBLE);
-  radio->setTXExtendedPreamble(RTX_EXTENDED_PREAMBLE);
-  radio->setTXPower(3);
-}
-
 /////////////////////////////////////////////////////////////////////////////////////////////
 // Setup.
 
 void setup()
 {
-  Serial.begin(TERMINAL_BAUDRATE);
   tmSerial.begin(9600);
 
   for (uint8_t ix = 0; ix < 4; ix++)
@@ -300,13 +216,12 @@ void setup()
   pinMode(PIN_YELLOW_LED, OUTPUT);
   digitalWrite(PIN_YELLOW_LED, LOW);
 
+  dcServices = new DCServices(DC_RADIO_NRF24_V2);
+
   processBootFlag();
   showTimeProtocol();
-  initRadio();
   initTimeModule();
-  sendTmModuleCommand("COFF");
-  syncWithTimeSignal();
-  sendTmModuleCommand("CON");
+  syncWithTimeSignal(); 
 }
 
 //
@@ -317,9 +232,7 @@ void setup()
 
 void loop()
 {
-  processBootFlag();
-  serveSerialInterface();
-  serveRadioInterface();
+  processBootFlag();  
 }
 
 //
